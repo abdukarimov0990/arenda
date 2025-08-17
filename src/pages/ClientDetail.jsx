@@ -1,6 +1,11 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router";
-import { useStore } from "../store.jsx";
+import { db } from "../../config/firebase";
+import { doc, getDoc } from "firebase/firestore";
+import { 
+  collection, query, where, getDocs, 
+  orderBy, limit, serverTimestamp 
+} from "firebase/firestore";
 import { 
   FaUser, FaPhone, FaIdCard, FaMapMarkerAlt, 
   FaBox, FaRuler, FaCalculator, FaMoneyBillWave, 
@@ -10,13 +15,84 @@ import {
 export default function ClientDetail() {
   const { id } = useParams();
   const nav = useNavigate();
-  const { clients, rentals, payments, clientStats } = useStore();
+  
+  const [client, setClient] = useState(null);
+  const [rentals, setRentals] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [stats, setStats] = useState({ total: 0, paid: 0, debt: 0 });
+  const [loading, setLoading] = useState(true);
 
-  const client = clients.find(c => c.id === id);
-  const stats = clientStats.find(s => s.clientId === id) || { total:0, paid:0, debt:0 };
-  const myRentals = rentals.filter(r => r.clientId === id);
-  const myPayments = payments.filter(p => p.clientId === id);
-  const lastRental = myRentals[myRentals.length - 1];
+  // Fetch client data
+  useEffect(() => {
+    const fetchClient = async () => {
+      try {
+        const docRef = doc(db, "clients", id);
+        const docSnap = await getDoc(docRef);
+        
+        if (docSnap.exists()) {
+          setClient({ id: docSnap.id, ...docSnap.data() });
+        } else {
+          setClient(null);
+        }
+      } catch (error) {
+        console.error("Error fetching client:", error);
+      }
+    };
+
+    fetchClient();
+  }, [id]);
+
+  // Fetch rentals and payments
+  useEffect(() => {
+    if (!id) return;
+
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        // Fetch rentals
+        const rentalsQuery = query(
+          collection(db, "rentals"),
+          where("clientId", "==", id),
+          orderBy("createdAt", "desc")
+        );
+        const rentalsSnapshot = await getDocs(rentalsQuery);
+        const rentalsData = rentalsSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setRentals(rentalsData);
+
+        // Fetch payments
+        const paymentsQuery = query(
+          collection(db, "payments"),
+          where("clientId", "==", id),
+          orderBy("date", "desc")
+        );
+        const paymentsSnapshot = await getDocs(paymentsQuery);
+        const paymentsData = paymentsSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setPayments(paymentsData);
+
+        // Calculate stats
+        const total = rentalsData.reduce((sum, r) => sum + r.totalPrice, 0);
+        const paid = paymentsData.reduce((sum, p) => sum + p.amount, 0);
+        setStats({ total, paid, debt: total - paid });
+
+      } catch (error) {
+        console.error("Error fetching data:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [id]);
+
+  const lastRental = rentals[0];
+  const myRentals = rentals;
+  const myPayments = payments;
 
   const statusLabel = useMemo(() => {
     if (stats.debt <= 0 && stats.total > 0) return (
@@ -35,6 +111,14 @@ export default function ClientDetail() {
       </span>
     );
   }, [stats]);
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500"></div>
+      </div>
+    );
+  }
 
   if (!client) {
     return (

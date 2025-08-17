@@ -6,6 +6,7 @@ import ClientDetail from './pages/ClientDetail'
 import AddPayment from './pages/AddPayment'
 import MainLayout from './layout/MainLayout'
 import { StoreProvider } from './store'
+import Login from './pages/Login'
 
 const App = () => {
   const router = createBrowserRouter(
@@ -15,6 +16,8 @@ const App = () => {
       <Route path="/clients/new" element={<AddClient />} />
       <Route path="/clients/:id" element={<ClientDetail />} />
       <Route path="/payments/new" element={<AddPayment />} />
+      <Route path="/login" element={<Login />} />
+
     </Route>
 
     )

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { useStore } from "../store.jsx";
+import { db } from "../../config/firebase";
+import { collection, addDoc, serverTimestamp } from "firebase/firestore"; 
 import { 
   FaUser, FaPhone, FaIdCard, FaMapMarkerAlt, 
   FaBox, FaTags, FaRuler, FaCalculator, 
@@ -8,31 +9,35 @@ import {
 } from "react-icons/fa";
 
 export default function AddClient() {
-  const { addClient, setRentals } = useStore();
   const nav = useNavigate();
 
   const [form, setForm] = useState({
     fullName: "", phone: "", passportId: "", address: "",
     productName: "", productType: "", productSize: "",
-    quantity: "", dailyPrice: "", startDate: "", endDate: "", totalDays: "", totalPrice: 0
+    quantity: "", dailyPrice: "", startDate: "", actualDays: "", totalPrice: 0
   });
+  
   const [err, setErr] = useState({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [dateWarning, setDateWarning] = useState("");
 
   const onChange = (k, v) => {
     setForm(prev => {
       let updated = { ...prev, [k]: v };
 
-      // Calculate days
-      if (k === "startDate" || k === "endDate") {
-        if (updated.startDate && updated.endDate) {
-          const diff = (new Date(updated.endDate) - new Date(updated.startDate)) / (1000 * 60 * 60 * 24);
-          updated.totalDays = diff > 0 ? diff : 0;
-        }
+      // Calculate total price when relevant fields change
+      if (updated.quantity && updated.dailyPrice && updated.actualDays) {
+        updated.totalPrice = Number(updated.quantity) * Number(updated.dailyPrice) * Number(updated.actualDays);
       }
 
-      // Calculate total price
-      if (updated.quantity && updated.dailyPrice && updated.totalDays) {
-        updated.totalPrice = Number(updated.quantity) * Number(updated.dailyPrice) * Number(updated.totalDays);
+      // Calculate suggested days if start date is provided
+      if (k === "startDate" && v) {
+        const today = new Date().toISOString().slice(0, 10);
+        if (v > today) {
+          setDateWarning("Boshlanish sanasi bugundan keyin bo'lishi mumkin emas");
+        } else {
+          setDateWarning("");
+        }
       }
 
       return updated;
@@ -43,7 +48,6 @@ export default function AddClient() {
     const e = {};
     if (!form.fullName.trim()) e.fullName = "Majburiy maydon";
     if (!form.phone.trim()) e.phone = "Majburiy maydon";
-    if (!form.passportId.trim()) e.passportId = "Majburiy maydon";
     if (!form.address.trim()) e.address = "Majburiy maydon";
     if (!form.productName.trim()) e.productName = "Majburiy maydon";
     if (!form.productType.trim()) e.productType = "Majburiy maydon";
@@ -51,38 +55,63 @@ export default function AddClient() {
     if (!form.quantity) e.quantity = "Majburiy maydon";
     if (!form.dailyPrice) e.dailyPrice = "Majburiy maydon";
     if (!form.startDate) e.startDate = "Majburiy maydon";
-    if (!form.endDate) e.endDate = "Majburiy maydon";
+    if (!form.actualDays || form.actualDays <= 0) e.actualDays = "Iltimos, to'g'ri kun kiriting";
+    
     setErr(e); 
     return Object.keys(e).length === 0;
   };
-
-  const submit = () => {
+  
+  const submit = async () => {
     if (!validate()) return;
-    const clientId = crypto.randomUUID();
-    addClient({
-      id: clientId,
-      fullName: form.fullName,
-      phone: form.phone,
-      passportId: form.passportId,
-      address: form.address
-    });
-    setRentals(prev => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        clientId,
+    setIsSubmitting(true);
+    
+    try {
+      // Add client data
+      const clientData = {
+        fullName: form.fullName,
+        phone: form.phone,
+        passportId: form.passportId,
+        address: form.address,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      const clientRef = await addDoc(collection(db, "clients"), clientData);
+
+      // Calculate end date based on start date and actual days
+      const startDate = new Date(form.startDate);
+      const endDate = new Date(startDate);
+      endDate.setDate(startDate.getDate() + Number(form.actualDays));
+
+      // Add rental data
+      const rentalData = {
+        clientId: clientRef.id,
+        clientName: form.fullName,
         productName: form.productName,
         productType: form.productType,
         productSize: form.productSize,
         quantity: Number(form.quantity),
         dailyPrice: Number(form.dailyPrice),
-        totalDays: Number(form.totalDays),
+        totalDays: Number(form.actualDays),
         totalPrice: Number(form.totalPrice),
-        paymentDueDate: form.endDate,
-        status: "active"
-      }
-    ]);
-    nav("/");
+        startDate: form.startDate,
+        endDate: endDate.toISOString().slice(0, 10),
+        actualDaysUsed: Number(form.actualDays),
+        paymentDueDate: endDate.toISOString().slice(0, 10),
+        status: "active",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      await addDoc(collection(db, "rentals"), rentalData);
+      
+      nav("/", { state: { success: true } });
+    } catch (error) {
+      console.error("Error adding document: ", error);
+      alert("Xatolik yuz berdi. Iltimos, qaytadan urunib ko'ring.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -203,30 +232,45 @@ export default function AddClient() {
                 className={`input ${err.startDate ? 'border-red-500' : 'border-gray-300'}`}
                 value={form.startDate} 
                 onChange={e => onChange("startDate", e.target.value)}
+                max={new Date().toISOString().slice(0, 10)}
               />
+              {dateWarning && (
+                <p className="mt-1 text-sm text-yellow-600 flex items-center">
+                  <svg className="h-4 w-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  {dateWarning}
+                </p>
+              )}
             </Field>
             
-            <Field label="Tugash sanasi" error={err.endDate} icon={<FaCalendarAlt />}>
+            <Field label="Ijara kuni (necha kun)" error={err.actualDays} icon={<FaCalendarAlt />}>
               <input 
-                type="date" 
-                className={`input ${err.endDate ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.endDate} 
-                onChange={e => onChange("endDate", e.target.value)}
-                min={form.startDate}
+                type="number" 
+                className={`input ${err.actualDays ? 'border-red-500' : 'border-gray-300'}`}
+                value={form.actualDays} 
+                onChange={e => onChange("actualDays", e.target.value)}
+                min="1"
+                placeholder="Ishlatilgan kunlar soni"
               />
             </Field>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Field label="Ijara muddati (kun)" icon={<FaCalculator />}>
-                <div className="flex items-center">
-                  <input 
-                    className="input bg-gray-50 font-medium" 
-                    value={form.totalDays} 
-                    readOnly 
-                  />
-                  <span className="ml-2 text-gray-500">kun</span>
-                </div>
-              </Field>
+              <Field label="Tugash sanasi" icon={<FaCalendarAlt />}>
+              <div className="flex items-center">
+  <input 
+    className="input bg-gray-50 font-medium" 
+    value={
+      form.startDate && form.actualDays 
+        ? new Date(
+            new Date(form.startDate).getTime() + 
+            (Number(form.actualDays) * 24 * 60 * 60 * 1000)
+          ).toISOString().slice(0, 10)
+        : ""
+    } 
+    readOnly 
+  />
+</div>              </Field>
               
               <Field label="Umumiy narx (so'm)" icon={<FaMoneyBillWave />}>
                 <div className="flex items-center">
@@ -246,6 +290,7 @@ export default function AddClient() {
             <button 
               onClick={() => nav(-1)} 
               className="btn-secondary flex items-center"
+              disabled={isSubmitting}
             >
               <FaTimes className="mr-2" />
               Bekor qilish
@@ -253,9 +298,22 @@ export default function AddClient() {
             <button 
               onClick={submit} 
               className="btn-primary flex items-center"
+              disabled={isSubmitting}
             >
-              <FaSave className="mr-2" />
-              Saqlash
+              {isSubmitting ? (
+                <>
+                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Saqlanmoqda...
+                </>
+              ) : (
+                <>
+                  <FaSave className="mr-2" />
+                  Saqlash
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -264,7 +322,7 @@ export default function AddClient() {
   );
 }
 
-// Enhanced Field Component
+// Field Component
 function Field({ label, error, children, icon }) {
   return (
     <div className="space-y-1">
@@ -286,7 +344,7 @@ function Field({ label, error, children, icon }) {
   );
 }
 
-// Enhanced Section Component
+// Section Component
 function Section({ title, children, icon }) {
   return (
     <div className="space-y-4">

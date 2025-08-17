@@ -1,15 +1,77 @@
 import { Link, useNavigate } from "react-router";
-import { useMemo, useState } from "react";
-import { useStore } from "../store.jsx";
+import { useEffect, useMemo, useState } from "react";
+import { db } from "../../config/firebase";
+import { 
+  collection, getDocs, query, where, 
+  doc, deleteDoc, orderBy 
+} from "firebase/firestore";
 import { 
   FaSearch, FaUserPlus, FaEye, 
   FaMoneyBillWave, FaTrash, FaUser 
 } from "react-icons/fa";
 
 export default function Clients() {
-  const { clients, clientStats, deleteClient } = useStore();
+  const [clients, setClients] = useState([]);
+  const [clientStats, setClientStats] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+
+  // Fetch clients and calculate stats
+  useEffect(() => {
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        // Fetch clients
+        const clientsQuery = query(
+          collection(db, "clients"),
+          orderBy("fullName", "asc")
+        );
+        const clientsSnapshot = await getDocs(clientsQuery);
+        const clientsData = clientsSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setClients(clientsData);
+
+        // Calculate stats for each client
+        const statsPromises = clientsData.map(async client => {
+          // Get rentals for client
+          const rentalsQuery = query(
+            collection(db, "rentals"),
+            where("clientId", "==", client.id)
+          );
+          const rentalsSnapshot = await getDocs(rentalsQuery);
+          const total = rentalsSnapshot.docs.reduce((sum, doc) => sum + doc.data().totalPrice, 0);
+
+          // Get payments for client
+          const paymentsQuery = query(
+            collection(db, "payments"),
+            where("clientId", "==", client.id)
+          );
+          const paymentsSnapshot = await getDocs(paymentsQuery);
+          const paid = paymentsSnapshot.docs.reduce((sum, doc) => sum + doc.data().amount, 0);
+
+          return {
+            clientId: client.id,
+            total,
+            paid,
+            debt: total - paid
+          };
+        });
+
+        const stats = await Promise.all(statsPromises);
+        setClientStats(stats);
+
+      } catch (error) {
+        console.error("Error fetching data:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
 
   const clientRows = useMemo(() => {
     const statsById = {};
@@ -28,11 +90,48 @@ export default function Clients() {
       });
   }, [clients, clientStats, searchQuery]);
 
-  const handleDelete = (clientId) => {
-    if (window.confirm("Mijozni o'chirishni tasdiqlaysizmi?")) {
-      deleteClient(clientId);
+  const handleDelete = async (clientId) => {
+    if (window.confirm("Mijozni o'chirishni tasdiqlaysizmi? Bundan keyin uni tiklab bo'lmaydi.")) {
+      try {
+        // Delete client
+        await deleteDoc(doc(db, "clients", clientId));
+        
+        // Delete related rentals (optional)
+        const rentalsQuery = query(
+          collection(db, "rentals"),
+          where("clientId", "==", clientId)
+        );
+        const rentalsSnapshot = await getDocs(rentalsQuery);
+        const deleteRentals = rentalsSnapshot.docs.map(doc => deleteDoc(doc.ref));
+        await Promise.all(deleteRentals);
+        
+        // Delete related payments (optional)
+        const paymentsQuery = query(
+          collection(db, "payments"),
+          where("clientId", "==", clientId)
+        );
+        const paymentsSnapshot = await getDocs(paymentsQuery);
+        const deletePayments = paymentsSnapshot.docs.map(doc => deleteDoc(doc.ref));
+        await Promise.all(deletePayments);
+
+        // Update local state
+        setClients(clients.filter(c => c.id !== clientId));
+        setClientStats(clientStats.filter(s => s.clientId !== clientId));
+
+      } catch (error) {
+        console.error("Error deleting client:", error);
+        alert("Mijozni o'chirishda xatolik yuz berdi. Iltimos, qaytadan urunib ko'ring.");
+      }
     }
   };
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-500"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

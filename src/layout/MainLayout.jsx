@@ -1,13 +1,36 @@
 import { Link, NavLink, Outlet } from "react-router";
-import { FaUsers, FaPlusCircle, FaHome, FaRegUserCircle } from "react-icons/fa";
-import { FiLogOut } from "react-icons/fi";
-import logo from '../img/logo.png';
+import { useState, useEffect } from "react";
+import { FaUsers, FaPlusCircle } from "react-icons/fa";
+import logo from "../img/logo.png";
+import Login from "../pages/Login";
 
 export default function MainLayout() {
+  const [isAuth, setIsAuth] = useState(false);
+
+  useEffect(() => {
+    const user = localStorage.getItem("authUser");
+    if (user) {
+      setIsAuth(true);
+    }
+  }, []);
+
+  const handleLogin = () => {
+    setIsAuth(true);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("authUser");
+    setIsAuth(false);
+  };
+
   const navItems = [
     { to: "/", label: "Mijozlar", icon: <FaUsers className="text-lg" /> },
     { to: "/payments/new", label: "To'lov qo'shish", icon: <FaPlusCircle className="text-lg" /> }
   ];
+
+  if (!isAuth) {
+    return <Login onLogin={handleLogin} />;
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -24,7 +47,9 @@ export default function MainLayout() {
                 alt="Logo" 
                 className="w-10 h-10 transition-transform group-hover:scale-105"
               />
-              <h3 className="text-xl font-semibold text-gray-800">Ijarachilar ro'yxati</h3>
+              <h3 className="text-xl font-semibold text-gray-800">
+                Ijarachilar ro'yxati
+              </h3>
             </Link>
             
             <div className="flex items-center gap-4">
@@ -46,7 +71,12 @@ export default function MainLayout() {
                   </NavLink>
                 ))}
               </nav>
-              
+              <button
+                onClick={handleLogout}
+                className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
+              >
+                Chiqish
+              </button>
             </div>
           </div>
         </div>
@@ -58,8 +88,6 @@ export default function MainLayout() {
           <Outlet />
         </div>
       </main>
-      
-      {/* FOOTER */}
     </div>
   );
 }

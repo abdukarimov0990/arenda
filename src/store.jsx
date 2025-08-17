@@ -1,28 +1,64 @@
-import React, { createContext, useContext, useMemo, useState } from "react";
-import { nanoid } from "nanoid";
+import React, { createContext, useContext, useEffect, useState , useMemo} from "react";
+import { 
+  collection, doc, setDoc, deleteDoc,
+  onSnapshot, query, orderBy, serverTimestamp 
+} from "firebase/firestore";
+import { db } from ".././config/firebase";
 
 const StoreCtx = createContext(null);
 export const useStore = () => useContext(StoreCtx);
 
 export function StoreProvider({ children }) {
-  // Demo ma'lumotlar
-  const [clients, setClients] = useState([
-    { id: "c1", fullName: "Jahongir Karimov", phone: "998901112233", passportId: "AB1234567", address: "Toshkent" },
-    { id: "c2", fullName: "Gulbahor Ismoilova", phone: "998909998877", passportId: "AA7654321", address: "Samarqand" },
-  ]);
+  const [clients, setClients] = useState([]);
+  const [rentals, setRentals] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  // Ijaralar (umumiy narx shu yerda saqlanadi)
-  const [rentals, setRentals] = useState([
-    { id: "r1", clientId: "c1", productName: "Lesa", productType: "Lesa", productSize: "6m", quantity: 10, dailyPrice: 30000, totalDays: 5, totalPrice: 1500000, paymentDueDate: "2025-08-20", status: "debt" },
-    { id: "r2", clientId: "c2", productName: "Stoyka", productType: "Stoyka", productSize: "3m", quantity: 20, dailyPrice: 15000, totalDays: 3, totalPrice: 900000, paymentDueDate: "2025-08-18", status: "active" },
-  ]);
+  // Fetch initial data
+  useEffect(() => {
+    const unsubscribeClients = onSnapshot(
+      query(collection(db, "clients"), orderBy("fullName")),
+      (snapshot) => {
+        const clientsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setClients(clientsData);
+      }
+    );
 
-  // To'lovlar alohida (clientId bo‘yicha bog‘lanadi)
-  const [payments, setPayments] = useState([
-    { id: "p1", clientId: "c1", amount: 500000, date: "2025-08-10" },
-  ]);
+    const unsubscribeRentals = onSnapshot(
+      collection(db, "rentals"),
+      (snapshot) => {
+        const rentalsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setRentals(rentalsData);
+      }
+    );
 
-  // Hisob-kitoblar
+    const unsubscribePayments = onSnapshot(
+      query(collection(db, "payments"), orderBy("date", "desc")),
+      (snapshot) => {
+        const paymentsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setPayments(paymentsData);
+      }
+    );
+
+    setLoading(false);
+
+    return () => {
+      unsubscribeClients();
+      unsubscribeRentals();
+      unsubscribePayments();
+    };
+  }, []);
+
+  // Calculate client stats
   const clientStats = useMemo(() => {
     const totalByClient = {};
     const paidByClient = {};
@@ -30,6 +66,7 @@ export function StoreProvider({ children }) {
     rentals.forEach(r => {
       totalByClient[r.clientId] = (totalByClient[r.clientId] || 0) + (r.totalPrice || 0);
     });
+
     payments.forEach(p => {
       paidByClient[p.clientId] = (paidByClient[p.clientId] || 0) + (p.amount || 0);
     });
@@ -42,34 +79,78 @@ export function StoreProvider({ children }) {
     });
   }, [clients, rentals, payments]);
 
-  // CRUD helpers
-  const addClient = (data) => {
-    setClients(prev => [...prev, { id: nanoid(), ...data }]);
-  };
-  const deleteClient = (id) => {
-    setClients(prev => prev.filter(c => c.id !== id));
-    setRentals(prev => prev.filter(r => r.clientId !== id));
-    setPayments(prev => prev.filter(p => p.clientId !== id));
+  // CRUD operations
+  const addClient = async (data) => {
+    try {
+      const newClientRef = doc(collection(db, "clients"));
+      await setDoc(newClientRef, {
+        ...data,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.error("Error adding client:", error);
+      throw error;
+    }
   };
 
-  const addPayment = ({ clientId, amount, date }) => {
-    setPayments(prev => [...prev, { id: nanoid(), clientId, amount: Number(amount || 0), date }]);
-    // Statusni yangilash (agar to'liq to‘langan bo‘lsa, “paid”ga o‘tkazish)
-    const stats = clientStats.find(s => s.clientId === clientId);
-    const newPaid = (stats?.paid || 0) + Number(amount || 0);
-    const total = stats?.total || 0;
-    if (newPaid >= total && total > 0) {
-      setRentals(prev =>
-        prev.map(r => r.clientId === clientId ? { ...r, status: "paid" } : r)
-      );
+  const deleteClient = async (id) => {
+    try {
+      // Delete client
+      await deleteDoc(doc(db, "clients", id));
+      
+      // Optionally delete related rentals and payments
+      // This would require additional queries to find all related documents
+    } catch (error) {
+      console.error("Error deleting client:", error);
+      throw error;
+    }
+  };
+
+  const addPayment = async ({ clientId, amount, date }) => {
+    try {
+      const newPaymentRef = doc(collection(db, "payments"));
+      await setDoc(newPaymentRef, {
+        clientId,
+        amount: Number(amount),
+        date,
+        createdAt: serverTimestamp()
+      });
+
+      // Update rental status if fully paid
+      const stats = clientStats.find(s => s.clientId === clientId);
+      const newPaid = (stats?.paid || 0) + Number(amount);
+      const total = stats?.total || 0;
+      
+      if (newPaid >= total && total > 0) {
+        // Find and update all rentals for this client
+        const rentalsQuery = query(
+          collection(db, "rentals"),
+          where("clientId", "==", clientId)
+        );
+        const querySnapshot = await getDocs(rentalsQuery);
+        
+        const updates = querySnapshot.docs.map(doc => 
+          updateDoc(doc.ref, { status: "paid" })
+        );
+        
+        await Promise.all(updates);
+      }
+    } catch (error) {
+      console.error("Error adding payment:", error);
+      throw error;
     }
   };
 
   const value = {
-    clients, setClients, addClient, deleteClient,
-    rentals, setRentals,
-    payments, setPayments, addPayment,
-    clientStats
+    clients,
+    rentals,
+    payments,
+    clientStats,
+    addClient,
+    deleteClient,
+    addPayment,
+    loading
   };
 
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;
