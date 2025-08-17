@@ -1,117 +1,200 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, Link } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { db } from "../../config/firebase";
-import { doc, getDoc } from "firebase/firestore";
-import { 
-  collection, query, where, getDocs, 
-  orderBy, limit, serverTimestamp 
+import {
+  doc,
+  updateDoc,
+  collection,
+  query,
+  where,
+  onSnapshot,
+  orderBy,
+  serverTimestamp,
 } from "firebase/firestore";
-import { 
-  FaUser, FaPhone, FaIdCard, FaMapMarkerAlt, 
-  FaBox, FaRuler, FaCalculator, FaMoneyBillWave, 
-  FaCalendarAlt, FaArrowLeft, FaPlusCircle 
+import {
+  FaUser,
+  FaPhone,
+  FaMapMarkerAlt,
+  FaBox,
+  FaMoneyBillWave,
+  FaCalendarAlt,
+  FaArrowLeft,
+  FaCheckCircle,
 } from "react-icons/fa";
 
 export default function ClientDetail() {
   const { id } = useParams();
   const nav = useNavigate();
-  
+
   const [client, setClient] = useState(null);
   const [rentals, setRentals] = useState([]);
-  const [payments, setPayments] = useState([]);
-  const [stats, setStats] = useState({ total: 0, paid: 0, debt: 0 });
   const [loading, setLoading] = useState(true);
+  const [selectedRental, setSelectedRental] = useState(null);
+  const [returnDate, setReturnDate] = useState(new Date().toISOString().split("T")[0]);
 
-  // Fetch client data
-  useEffect(() => {
-    const fetchClient = async () => {
-      try {
-        const docRef = doc(db, "clients", id);
-        const docSnap = await getDoc(docRef);
-        
-        if (docSnap.exists()) {
-          setClient({ id: docSnap.id, ...docSnap.data() });
-        } else {
-          setClient(null);
-        }
-      } catch (error) {
-        console.error("Error fetching client:", error);
-      }
-    };
+  // ===== Helpers =====
+  const formatUZS = (n) => (Number(n) || 0).toLocaleString("uz-UZ");
+  const todayISO = () => new Date().toISOString().split("T")[0];
 
-    fetchClient();
-  }, [id]);
+  const toDate = (v) => {
+    // startDate/returnDate kutilgan format: 'YYYY-MM-DD'
+    // Notog'ri qiymatlarga bardoshlilik
+    if (!v) return null;
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  };
 
-  // Fetch rentals and payments
+  const calculateDays = (startDate, returnDate) => {
+    const start = toDate(startDate);
+    const end = toDate(returnDate) || new Date();
+    if (!start) return 0;
+    const MS_PER_DAY = 1000 * 60 * 60 * 24;
+    // UTC kechishlardan ta'sirni kamaytirish uchun vaqtlarni 00:00ga normalize qilamiz
+    const s = new Date(Date.UTC(start.getFullYear(), start.getMonth(), start.getDate()));
+    const e = new Date(Date.UTC(end.getFullYear(), end.getMonth(), end.getDate()));
+    const diff = Math.ceil((e - s) / MS_PER_DAY);
+    return diff > 0 ? diff : 1; // kamida 1 kun
+  };
+
+  const calculateTotalPrice = (dailyPrice, days) =>
+    (Number(dailyPrice) || 0) * (days || 1);
+
+  // ===== Real-time client =====
   useEffect(() => {
     if (!id) return;
-
-    const fetchData = async () => {
-      setLoading(true);
-      try {
-        // Fetch rentals
-        const rentalsQuery = query(
-          collection(db, "rentals"),
-          where("clientId", "==", id),
-          orderBy("createdAt", "desc")
-        );
-        const rentalsSnapshot = await getDocs(rentalsQuery);
-        const rentalsData = rentalsSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setRentals(rentalsData);
-
-        // Fetch payments
-        const paymentsQuery = query(
-          collection(db, "payments"),
-          where("clientId", "==", id),
-          orderBy("date", "desc")
-        );
-        const paymentsSnapshot = await getDocs(paymentsQuery);
-        const paymentsData = paymentsSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setPayments(paymentsData);
-
-        // Calculate stats
-        const total = rentalsData.reduce((sum, r) => sum + r.totalPrice, 0);
-        const paid = paymentsData.reduce((sum, p) => sum + p.amount, 0);
-        setStats({ total, paid, debt: total - paid });
-
-      } catch (error) {
-        console.error("Error fetching data:", error);
-      } finally {
+    setLoading(true);
+    const unsub = onSnapshot(
+      doc(db, "clients", id),
+      (snap) => {
+        setClient(snap.exists() ? { id: snap.id, ...snap.data() } : null);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Client snapshot error:", err);
         setLoading(false);
       }
-    };
-
-    fetchData();
+    );
+    return () => unsub();
   }, [id]);
 
-  const lastRental = rentals[0];
-  const myRentals = rentals;
-  const myPayments = payments;
+  // ===== Real-time rentals for this client =====
+  useEffect(() => {
+    if (!id) return;
+    setLoading(true);
+    const q = query(
+      collection(db, "rentals"),
+      where("clientId", "==", id),
+      orderBy("createdAt", "desc")
+    );
 
-  const statusLabel = useMemo(() => {
-    if (stats.debt <= 0 && stats.total > 0) return (
-      <span className="px-2 py-1 rounded-full bg-green-100 text-green-800 text-xs font-medium">
-        To'langan
-      </span>
-    );
-    if (stats.debt > 0) return (
-      <span className="px-2 py-1 rounded-full bg-red-100 text-red-800 text-xs font-medium">
-        Qarzdor: {stats.debt.toLocaleString()} so'm
-      </span>
-    );
-    return (
-      <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-800 text-xs font-medium">
-        Faol
-      </span>
-    );
-  }, [stats]);
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => {
+          const data = d.data();
 
+          const days = calculateDays(data.startDate, data.returnDate);
+          const dynTotal = calculateTotalPrice(data.dailyPrice, days);
+
+          // Agar hujjatda allaqachon yakuniy totalPrice saqlangan bo'lsa va returnDate mavjud bo'lsa — uni ishlatamiz.
+          // Aks holda dinamik hisob-kitob.
+          const finalShownTotal =
+            data.returnDate && typeof data.totalPrice === "number"
+              ? data.totalPrice
+              : dynTotal;
+
+          return {
+            id: d.id,
+            ...data,
+            // UI uchun derivativlar:
+            totalDays: days,
+            totalPrice: finalShownTotal,
+            dailyPrice: Number(data.dailyPrice) || 0,
+          };
+        });
+        setRentals(list);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Rentals snapshot error:", err);
+        setLoading(false);
+      }
+    );
+
+    return () => unsub();
+  }, [id]);
+
+  const activeRentals = useMemo(
+    () =>
+      rentals.filter(
+        (r) => !(r.returnDate || r.status === "returned" || r.returned === true)
+      ),
+    [rentals]
+  );
+
+  const returnedRentals = useMemo(
+    () =>
+      rentals.filter(
+        (r) => r.returnDate || r.status === "returned" || r.returned === true
+      ),
+    [rentals]
+  );
+
+  const totals = useMemo(() => {
+    // Aktivlar — bugungi kunga qadar dinamik hisoblanadi
+    const activeSum = activeRentals.reduce((s, r) => {
+      const daysNow = calculateDays(r.startDate, null);
+      return s + calculateTotalPrice(r.dailyPrice, daysNow);
+    }, 0);
+
+    // Qaytarilganlar — qaytarilgan sana uchun yakuniy (doc.totalPrice bo'lsa shuni, bo'lmasa hisob)
+    const returnedSum = returnedRentals.reduce((s, r) => {
+      if (typeof r.totalPrice === "number") return s + r.totalPrice;
+      const days = calculateDays(r.startDate, r.returnDate);
+      return s + calculateTotalPrice(r.dailyPrice, days);
+    }, 0);
+
+    return {
+      activeCount: activeRentals.length,
+      returnedCount: returnedRentals.length,
+      activeSum,
+      returnedSum,
+      allSum: activeSum + returnedSum,
+    };
+  }, [activeRentals, returnedRentals]);
+
+  // ===== Return product (update rental) =====
+  const handleReturnProduct = async () => {
+    if (!selectedRental || !returnDate) {
+      alert("Iltimos, mahsulot va qaytarish sanasini tanlang!");
+      return;
+    }
+    if (!window.confirm("Mahsulotni qaytarishni tasdiqlaysizmi?")) return;
+
+    try {
+      const days = calculateDays(selectedRental.startDate, returnDate);
+      const finalTotal = calculateTotalPrice(selectedRental.dailyPrice, days);
+
+      const rentalRef = doc(db, "rentals", selectedRental.id);
+      await updateDoc(rentalRef, {
+        returnDate,                 // tanlangan sana
+        totalDays: days,            // yakuniy kunlar
+        totalPrice: finalTotal,     // YAKUNIY summa (saqlaymiz!)
+        status: "returned",
+        returned: true,
+        updatedAt: serverTimestamp(),
+      });
+
+      setSelectedRental(null);
+      alert("Mahsulot muvaffaqiyatli qaytarildi!");
+      // Realtime onSnapshot avtomatik yangilaydi
+    } catch (error) {
+      console.error("Error returning product:", error);
+      alert("Xatolik yuz berdi. Iltimos, qaytadan urunib ko'ring.");
+    }
+  };
+
+  // ===== UI =====
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -124,10 +207,7 @@ export default function ClientDetail() {
     return (
       <div className="text-center p-8 text-gray-500">
         <p className="mb-4">Mijoz topilmadi</p>
-        <button 
-          onClick={() => nav("/")} 
-          className="btn-primary"
-        >
+        <button onClick={() => nav("/")} className="btn-primary">
           <FaArrowLeft className="mr-2" />
           Orqaga qaytish
         </button>
@@ -137,7 +217,7 @@ export default function ClientDetail() {
 
   return (
     <div className="space-y-6">
-      {/* Client Header Section */}
+      {/* Header */}
       <div className="bg-white rounded-xl shadow-sm p-6">
         <div className="flex flex-col sm:flex-row justify-between gap-4">
           <div className="space-y-3">
@@ -146,9 +226,22 @@ export default function ClientDetail() {
                 <FaUser size={20} />
               </div>
               <div>
-                <h2 className="text-2xl font-bold text-gray-800">{client.fullName}</h2>
-                <div className="flex items-center gap-3 mt-1">
-                  {statusLabel}
+                <h2 className="text-2xl font-bold text-gray-800">
+                  {client.fullName}
+                </h2>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span
+                    className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      totals.activeCount > 0
+                        ? "bg-blue-100 text-blue-800"
+                        : "bg-gray-100 text-gray-800"
+                    }`}
+                  >
+                    {totals.activeCount} ta faol ijara
+                  </span>
+                  <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                    Jami mahsulot: {rentals.length} ta
+                  </span>
                 </div>
               </div>
             </div>
@@ -162,233 +255,218 @@ export default function ClientDetail() {
                 <FaMapMarkerAlt className="text-emerald-600" />
                 {client.address}
               </div>
-              <div className="flex items-center gap-2">
-                <FaIdCard className="text-emerald-600" />
-                Passport/ID: {client.passportId}
+            </div>
+          </div>
+
+          <button onClick={() => nav(-1)} className="btn-secondary self-start sm:self-center">
+            <FaArrowLeft className="mr-2" />
+            Orqaga qaytish
+          </button>
+        </div>
+
+        {/* Summary cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-6">
+          <div className="rounded-xl border p-4 bg-gray-50">
+            <div className="text-sm text-gray-600 flex items-center gap-2">
+              <FaMoneyBillWave />
+              Faol ijaralar summasi (bugungi kungacha)
+            </div>
+            <div className="text-xl font-bold">{formatUZS(totals.activeSum)} so'm</div>
+          </div>
+          <div className="rounded-xl border p-4 bg-gray-50">
+            <div className="text-sm text-gray-600 flex items-center gap-2">
+              <FaMoneyBillWave />
+              Qaytarilganlar summasi (yakuniy)
+            </div>
+            <div className="text-xl font-bold">{formatUZS(totals.returnedSum)} so'm</div>
+          </div>
+          <div className="rounded-xl border p-4 bg-gray-50">
+            <div className="text-sm text-gray-600 flex items-center gap-2">
+              <FaMoneyBillWave />
+              Jami summa
+            </div>
+            <div className="text-xl font-bold">{formatUZS(totals.allSum)} so'm</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Return modal */}
+      {selectedRental && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold mb-4">Mahsulotni qaytarish</h3>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Mahsulot nomi
+                </label>
+                <div className="p-2 border border-gray-300 rounded bg-gray-50">
+                  {selectedRental.productName} ({selectedRental.productType})
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Olingan sana
+                  </label>
+                  <div className="p-2 border border-gray-300 rounded bg-gray-50">
+                    {selectedRental.startDate}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Qaytarish sanasi
+                  </label>
+                  <input
+                    type="date"
+                    className="input border-gray-300 w-full"
+                    value={returnDate}
+                    onChange={(e) => setReturnDate(e.target.value)}
+                    max={todayISO()}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Kunlik narx
+                  </label>
+                  <div className="p-2 border border-gray-300 rounded bg-gray-50">
+                    {formatUZS(selectedRental.dailyPrice)} so'm
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Jami to'lov
+                  </label>
+                  <div className="p-2 border border-gray-300 rounded bg-gray-50 font-bold">
+                    {formatUZS(
+                      calculateTotalPrice(
+                        selectedRental.dailyPrice,
+                        calculateDays(selectedRental.startDate, returnDate)
+                      )
+                    )}{" "}
+                    so'm
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4">
+                <button onClick={() => setSelectedRental(null)} className="btn-secondary">
+                  Bekor qilish
+                </button>
+                <button onClick={handleReturnProduct} className="btn-primary flex items-center">
+                  <FaCheckCircle className="mr-2" />
+                  Qaytarish
+                </button>
               </div>
             </div>
           </div>
-
-          <Link 
-            to={`/payments/new?clientId=${client.id}`} 
-            className="btn-primary self-start sm:self-center"
-          >
-            <FaPlusCircle className="mr-2" />
-            To'lov qo'shish
-          </Link>
         </div>
+      )}
 
-        {/* Last Rental Info */}
-        {lastRental && (
-          <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-            <h3 className="font-medium text-gray-800 mb-3 flex items-center gap-2">
-              <FaBox className="text-emerald-600" />
-              Oxirgi ijara ma'lumotlari
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-              <InfoItem label="Mahsulot" icon={<FaBox />}>
-                {lastRental.productName} ({lastRental.productType})
-              </InfoItem>
-              <InfoItem label="Razmer" icon={<FaRuler />}>
-                {lastRental.productSize}
-              </InfoItem>
-              <InfoItem label="Soni" icon={<FaCalculator />}>
-                {lastRental.quantity}
-              </InfoItem>
-              <InfoItem label="Kunlik narx" icon={<FaMoneyBillWave />}>
-                {lastRental.dailyPrice.toLocaleString()} so'm
-              </InfoItem>
-              <InfoItem label="Ijara muddati" icon={<FaCalendarAlt />}>
-                {lastRental.startDate} → {lastRental.paymentDueDate}
-              </InfoItem>
-              <InfoItem label="Umumiy narx" icon={<FaMoneyBillWave />}>
-                <span className="font-semibold">
-                  {lastRental.totalPrice.toLocaleString()} so'm
-                </span>
-              </InfoItem>
-            </div>
-          </div>
-        )}
-      </div>
+      {/* Rentals table */}
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-gray-200">
+          <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+            <FaBox className="text-emerald-600" />
+            Ijara tarixi ({rentals.length} ta)
+          </h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Mahsulot
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Sana
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Kunlar
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Narx
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Holat
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Harakatlar
+                </th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {rentals.length > 0 ? (
+                rentals.map((r) => {
+                  // Aktiv bo'lsa bugungi kungacha dinamik, qaytarilgan bo'lsa hujjatdagi yakuniy yoki hisoblangan
+                  const isReturned = !!(r.returnDate || r.status === "returned" || r.returned === true);
+                  const daysToShow = isReturned ? calculateDays(r.startDate, r.returnDate) : calculateDays(r.startDate, null);
+                  const totalToShow = isReturned
+                    ? (typeof r.totalPrice === "number" ? r.totalPrice : calculateTotalPrice(r.dailyPrice, daysToShow))
+                    : calculateTotalPrice(r.dailyPrice, daysToShow);
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <StatCard 
-          label="Umumiy summa" 
-          value={stats.total.toLocaleString() + " so'm"} 
-          icon={<FaMoneyBillWave />}
-          color="emerald"
-        />
-        <StatCard 
-          label="To'langan" 
-          value={stats.paid.toLocaleString() + " so'm"} 
-          icon={<FaMoneyBillWave />}
-          color="blue"
-        />
-        <StatCard 
-          label="Qolgan qarz" 
-          value={stats.debt.toLocaleString() + " so'm"} 
-          icon={<FaMoneyBillWave />}
-          color={stats.debt > 0 ? "red" : "gray"}
-        />
-      </div>
-
-      {/* Rentals and Payments Tables */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Rentals Table */}
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-gray-200">
-            <h3 className="font-semibold text-gray-800">Ijaralar tarixi</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Mahsulot
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Soni
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Kun
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Jami
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Holat
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {myRentals.length > 0 ? (
-                  myRentals.map(r => (
+                  return (
                     <tr key={r.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-800">
-                        {r.productName} <span className="text-gray-500">({r.productSize})</span>
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-gray-800">
+                          {r.productName} ({r.productType})
+                        </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-800">
-                        {r.quantity}
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        <div>
+                          <FaCalendarAlt className="inline mr-1 text-emerald-600" /> {r.startDate}
+                        </div>
+                        {r.returnDate && (
+                          <div className="text-xs text-gray-500">Qaytarildi: {r.returnDate}</div>
+                        )}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-800">
-                        {r.totalDays}
+                      <td className="px-4 py-3 text-sm">{daysToShow} kun</td>
+                      <td className="px-4 py-3 text-sm text-gray-800">
+                        <div>{formatUZS(r.dailyPrice)} so'm/kun</div>
+                        <div className="font-bold">{formatUZS(totalToShow)} so'm</div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-800">
-                        {r.totalPrice.toLocaleString()} so'm
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          r.status === "paid" ? "bg-green-100 text-green-800" :
-                          r.status === "debt" ? "bg-red-100 text-red-800" :
-                          "bg-gray-100 text-gray-800"
-                        }`}>
-                          {r.status === "paid" ? "To'langan" : 
-                           r.status === "debt" ? "Qarzdor" : "Faol"}
+                      <td className="px-4 py-3">
+                        <span
+                          className={`px-2 py-1 rounded-full text-xs font-medium ${
+                            isReturned ? "bg-gray-100 text-gray-800" : "bg-blue-100 text-blue-800"
+                          }`}
+                        >
+                          {isReturned ? "Qaytarilgan" : "Faol"}
                         </span>
                       </td>
+                      <td className="px-4 py-3 text-sm">
+                        {!isReturned && (
+                          <button
+                            onClick={() => {
+                              setSelectedRental(r);
+                              setReturnDate(todayISO());
+                            }}
+                            className="text-xs bg-emerald-100 text-emerald-800 px-3 py-1 rounded hover:bg-emerald-200 flex items-center gap-1"
+                          >
+                            <FaCheckCircle size={12} />
+                            Qaytarish
+                          </button>
+                        )}
+                      </td>
                     </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan="5" className="px-4 py-8 text-center text-sm text-gray-500">
-                      Ijara tarixi mavjud emas
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Payments Table */}
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-gray-200">
-            <h3 className="font-semibold text-gray-800">To'lovlar tarixi</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
+                  );
+                })
+              ) : (
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Sana
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Summa
-                  </th>
+                  <td colSpan="6" className="px-4 py-8 text-center text-sm text-gray-500">
+                    Ijara tarixi mavjud emas
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {myPayments.length > 0 ? (
-                  myPayments.map(p => (
-                    <tr key={p.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-800">
-                        {p.date}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-emerald-700">
-                        +{p.amount.toLocaleString()} so'm
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan="2" className="px-4 py-8 text-center text-sm text-gray-500">
-                      To'lovlar tarixi mavjud emas
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
-
-      <button 
-        onClick={() => nav(-1)} 
-        className="btn-secondary"
-      >
-        <FaArrowLeft className="mr-2" />
-        Orqaga qaytish
-      </button>
-    </div>
-  );
-}
-
-// Stat Card Component
-function StatCard({ label, value, icon, color = "emerald" }) {
-  const colorClasses = {
-    emerald: "bg-emerald-100 text-emerald-700",
-    blue: "bg-blue-100 text-blue-700",
-    red: "bg-red-100 text-red-700",
-    gray: "bg-gray-100 text-gray-700"
-  };
-
-  return (
-    <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-      <div className="p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-gray-500">{label}</p>
-            <p className="mt-1 text-xl font-semibold">{value}</p>
-          </div>
-          <div className={`p-3 rounded-lg ${colorClasses[color]}`}>
-            {icon}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Info Item Component
-function InfoItem({ label, children, icon }) {
-  return (
-    <div>
-      <p className="text-xs text-gray-500 flex items-center gap-1">
-        {icon}
-        {label}
-      </p>
-      <p className="text-sm font-medium mt-1">{children}</p>
     </div>
   );
 }

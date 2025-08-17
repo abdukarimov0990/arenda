@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { db } from "../../config/firebase";
-import { collection, addDoc, serverTimestamp, getDocs } from "firebase/firestore";
-import { FaUser, FaMoneyBillWave, FaCalendarAlt, FaSave, FaTimes } from "react-icons/fa";
+import { 
+  collection, addDoc, serverTimestamp, getDocs, query, where 
+} from "firebase/firestore";
+import { 
+  FaUser, FaMoneyBillWave, FaCalendarAlt, FaSave, FaTimes, FaBox 
+} from "react-icons/fa";
 
 function useQuery() {
   const { search } = useLocation();
@@ -12,10 +16,11 @@ function useQuery() {
 export default function AddPayment() {
   const nav = useNavigate();
   const q = useQuery();
-  const preselected = q.get("clientId") || "";
+  const preselectedClient = q.get("clientId") || "";
 
   const [form, setForm] = useState({
-    clientId: preselected,
+    clientId: preselectedClient,
+    rentalId: "",
     amount: "",
     date: new Date().toISOString().slice(0,10),
     description: ""
@@ -23,69 +28,91 @@ export default function AddPayment() {
   
   const [err, setErr] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [clients, setClients] = useState([]);
-  const [loadingClients, setLoadingClients] = useState(true);
-  const [clientStats, setClientStats] = useState({ total: 0, paid: 0, debt: 0 });
 
-  // Fetch clients from Firestore
+  const [clients, setClients] = useState([]);
+  const [rentals, setRentals] = useState([]);
+  const [loadingClients, setLoadingClients] = useState(true);
+  const [loadingRentals, setLoadingRentals] = useState(false);
+
+  const [stats, setStats] = useState({ total: 0, paid: 0, debt: 0 });
+  const [rentalStats, setRentalStats] = useState({ total: 0, paid: 0, debt: 0 });
+
+  // Fetch clients
   useEffect(() => {
     const fetchClients = async () => {
       try {
-        const querySnapshot = await getDocs(collection(db, "clients"));
-        const clientsData = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })).sort((a, b) => a.fullName.localeCompare(b.fullName));
-        
-        setClients(clientsData);
+        const snapshot = await getDocs(collection(db, "clients"));
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+          .sort((a, b) => a.fullName.localeCompare(b.fullName));
+        setClients(data);
       } catch (error) {
-        console.error("Error fetching clients: ", error);
+        console.error("Error fetching clients:", error);
       } finally {
         setLoadingClients(false);
       }
     };
-
     fetchClients();
   }, []);
 
-  // Fetch client stats when selected
+  // Fetch rentals when client selected
   useEffect(() => {
     if (!form.clientId) return;
-
-    const fetchClientStats = async () => {
+    const fetchRentals = async () => {
+      setLoadingRentals(true);
       try {
-        // Fetch rentals
-        const rentalsQuery = query(
+        const rentalQuery = query(
           collection(db, "rentals"),
           where("clientId", "==", form.clientId)
         );
-        const rentalsSnapshot = await getDocs(rentalsQuery);
-        const rentalsData = rentalsSnapshot.docs.map(doc => doc.data());
-        
-        // Fetch payments
+        const rentalSnap = await getDocs(rentalQuery);
+        const rentalData = rentalSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setRentals(rentalData);
+
+        // Stats for all rentals of client
+        const total = rentalData.reduce((s, r) => s + (r.totalPrice || 0), 0);
         const paymentsQuery = query(
           collection(db, "payments"),
           where("clientId", "==", form.clientId)
         );
-        const paymentsSnapshot = await getDocs(paymentsQuery);
-        const paymentsData = paymentsSnapshot.docs.map(doc => doc.data());
+        const paymentsSnap = await getDocs(paymentsQuery);
+        const paid = paymentsSnap.docs.reduce((s, p) => s + (p.data().amount || 0), 0);
 
-        // Calculate stats
-        const total = rentalsData.reduce((sum, r) => sum + (r.totalPrice || 0), 0);
-        const paid = paymentsData.reduce((sum, p) => sum + (p.amount || 0), 0);
-        
-        setClientStats({ 
-          total, 
-          paid, 
-          debt: total - paid 
-        });
-      } catch (error) {
-        console.error("Error fetching client stats:", error);
+        setStats({ total, paid, debt: total - paid });
+      } catch (err) {
+        console.error("Error fetching rentals:", err);
+      } finally {
+        setLoadingRentals(false);
       }
     };
-
-    fetchClientStats();
+    fetchRentals();
   }, [form.clientId]);
+
+  // Fetch rental-specific stats
+  useEffect(() => {
+    if (!form.rentalId) return;
+    const fetchRentalStats = async () => {
+      try {
+        const rental = rentals.find(r => r.id === form.rentalId);
+        if (!rental) return;
+
+        const paymentsQuery = query(
+          collection(db, "payments"),
+          where("rentalId", "==", form.rentalId)
+        );
+        const snap = await getDocs(paymentsQuery);
+        const paid = snap.docs.reduce((s, p) => s + (p.data().amount || 0), 0);
+
+        setRentalStats({ 
+          total: rental.totalPrice || 0,
+          paid,
+          debt: (rental.totalPrice || 0) - paid
+        });
+      } catch (error) {
+        console.error("Error fetching rental stats:", error);
+      }
+    };
+    fetchRentalStats();
+  }, [form.rentalId, rentals]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -95,39 +122,35 @@ export default function AddPayment() {
   const validate = () => {
     const errors = {};
     if (!form.clientId) errors.clientId = "Mijozni tanlang";
+    if (!form.rentalId) errors.rentalId = "Mahsulotni tanlang";
     if (!form.amount || Number(form.amount) <= 0) errors.amount = "Summani to'g'ri kiriting";
     if (!form.date) errors.date = "Sanani kiriting";
-    setErr(errors); 
+    setErr(errors);
     return Object.keys(errors).length === 0;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validate()) return;
-    
+
     setIsSubmitting(true);
-    
     try {
-      const paymentData = {
+      await addDoc(collection(db, "payments"), {
         clientId: form.clientId,
+        rentalId: form.rentalId,
         amount: Number(form.amount),
         date: form.date,
         description: form.description,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
-      };
+      });
 
-      await addDoc(collection(db, "payments"), paymentData);
-      
-      nav(`/clients/${form.clientId}`, { 
-        state: { 
-          success: true,
-          message: "To'lov muvaffaqiyatli qo'shildi" 
-        } 
+      nav(`/clients/${form.clientId}`, {
+        state: { success: true, message: "To'lov qo'shildi" }
       });
     } catch (error) {
-      console.error("Error adding payment: ", error);
-      alert("Xatolik yuz berdi. Iltimos, qaytadan urunib ko'ring.");
+      console.error("Error adding payment:", error);
+      alert("Xatolik yuz berdi.");
     } finally {
       setIsSubmitting(false);
     }
@@ -139,177 +162,149 @@ export default function AddPayment() {
         <FaMoneyBillWave className="text-emerald-600" />
         To'lov qo'shish
       </h2>
-      
+
       <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-md overflow-hidden">
         <div className="p-6 space-y-6">
+
           {/* Client Selection */}
-          <div className="space-y-2">
-            <label htmlFor="clientId" className="block text-sm font-medium text-gray-700 flex items-center gap-2">
-              <FaUser className="text-emerald-600" />
-              Mijoz *
+          <div>
+            <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
+              <FaUser className="text-emerald-600" /> Mijoz *
             </label>
-            {loadingClients ? (
-              <div className="flex items-center gap-2 text-gray-500">
-                <svg className="animate-spin h-5 w-5 text-emerald-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Mijozlar yuklanmoqda...
-              </div>
-            ) : (
-              <>
-                <select
-                  id="clientId"
-                  name="clientId"
-                  className={`input ${err.clientId ? 'border-red-500' : 'border-gray-300'}`}
-                  value={form.clientId} 
-                  onChange={handleChange}
-                  disabled={isSubmitting}
-                >
-                  <option value="">— Tanlang —</option>
-                  {clients.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.fullName} ({c.phone})
-                    </option>
-                  ))}
-                </select>
-                {err.clientId && (
-                  <p className="text-sm text-red-600 mt-1 flex items-center gap-1">
-                    <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                    </svg>
-                    {err.clientId}
-                  </p>
-                )}
-              </>
-            )}
+            <select
+              name="clientId"
+              className="input"
+              value={form.clientId}
+              onChange={handleChange}
+              disabled={isSubmitting || loadingClients}
+            >
+              <option value="">— Tanlang —</option>
+              {clients.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.fullName} ({c.phone})
+                </option>
+              ))}
+            </select>
+            {err.clientId && <p className="text-red-600 text-sm">{err.clientId}</p>}
           </div>
 
-          {/* Client Stats */}
+          {/* Rental Selection */}
+          {form.clientId && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
+                <FaBox className="text-emerald-600" /> Mahsulot *
+              </label>
+              <select
+                name="rentalId"
+                className="input"
+                value={form.rentalId}
+                onChange={handleChange}
+                disabled={isSubmitting || loadingRentals}
+              >
+                <option value="">— Tanlang —</option>
+                {rentals.map(r => (
+                  <option key={r.id} value={r.id}>
+                    {r.productName} ({r.totalPrice?.toLocaleString()} so'm)
+                  </option>
+                ))}
+              </select>
+              {err.rentalId && <p className="text-red-600 text-sm">{err.rentalId}</p>}
+            </div>
+          )}
+
+          {/* Stats */}
           {form.clientId && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-emerald-50 p-4 rounded-lg border border-gray-200">
-                <div className="text-xs font-medium text-gray-500">Umumiy summa</div>
-                <div className="text-lg font-bold text-emerald-700 mt-1">
-                  {clientStats.total.toLocaleString()} so'm
-                </div>
+              <div className="bg-emerald-50 p-4 rounded-lg">
+                <div className="text-xs text-gray-500">Mijoz umumiy summa</div>
+                <div className="text-lg font-bold text-emerald-700">{stats.total.toLocaleString()} so'm</div>
               </div>
-              <div className="bg-blue-50 p-4 rounded-lg border border-gray-200">
-                <div className="text-xs font-medium text-gray-500">To'langan</div>
-                <div className="text-lg font-bold text-blue-700 mt-1">
-                  {clientStats.paid.toLocaleString()} so'm
-                </div>
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <div className="text-xs text-gray-500">To'langan</div>
+                <div className="text-lg font-bold text-blue-700">{stats.paid.toLocaleString()} so'm</div>
               </div>
-              <div className={`p-4 rounded-lg border ${clientStats.debt > 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200'}`}>
-                <div className="text-xs font-medium text-gray-500">Qolgan qarz</div>
-                <div className={`text-lg font-bold mt-1 ${clientStats.debt > 0 ? 'text-red-700' : 'text-gray-700'}`}>
-                  {clientStats.debt.toLocaleString()} so'm
+              <div className={`p-4 rounded-lg ${stats.debt>0?'bg-red-50':'bg-gray-50'}`}>
+                <div className="text-xs text-gray-500">Qolgan qarz</div>
+                <div className={`text-lg font-bold ${stats.debt>0?'text-red-700':'text-gray-700'}`}>
+                  {stats.debt.toLocaleString()} so'm
                 </div>
               </div>
             </div>
           )}
 
-          {/* Amount Input */}
-          <div className="space-y-2">
-            <label htmlFor="amount" className="block text-sm font-medium text-gray-700 flex items-center gap-2">
-              <FaMoneyBillWave className="text-emerald-600" />
-              To'langan summa (so'm) *
+          {form.rentalId && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-emerald-100 p-4 rounded-lg">
+                <div className="text-xs text-gray-600">Mahsulot narxi</div>
+                <div className="text-lg font-bold">{rentalStats.total.toLocaleString()} so'm</div>
+              </div>
+              <div className="bg-blue-100 p-4 rounded-lg">
+                <div className="text-xs text-gray-600">To'langan</div>
+                <div className="text-lg font-bold">{rentalStats.paid.toLocaleString()} so'm</div>
+              </div>
+              <div className={`p-4 rounded-lg ${rentalStats.debt>0?'bg-red-100':'bg-green-100'}`}>
+                <div className="text-xs text-gray-600">Qolgan</div>
+                <div className="text-lg font-bold">{rentalStats.debt.toLocaleString()} so'm</div>
+              </div>
+            </div>
+          )}
+
+          {/* Amount */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
+              <FaMoneyBillWave className="text-emerald-600" /> To'lov (so'm) *
             </label>
             <input
-              id="amount"
+              type="number"
               name="amount"
-              type="number" 
-              min="1"
-              className={`input ${err.amount ? 'border-red-500' : 'border-gray-300'}`}
-              value={form.amount} 
+              className="input"
+              value={form.amount}
               onChange={handleChange}
-              placeholder="0"
               disabled={isSubmitting}
+              min="1"
             />
-            {err.amount && (
-              <p className="text-sm text-red-600 mt-1 flex items-center gap-1">
-                <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                </svg>
-                {err.amount}
-              </p>
-            )}
+            {err.amount && <p className="text-red-600 text-sm">{err.amount}</p>}
           </div>
 
-          {/* Date Input */}
-          <div className="space-y-2">
-            <label htmlFor="date" className="block text-sm font-medium text-gray-700 flex items-center gap-2">
-              <FaCalendarAlt className="text-emerald-600" />
-              Sana *
+          {/* Date */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
+              <FaCalendarAlt className="text-emerald-600" /> Sana *
             </label>
             <input
-              id="date"
+              type="date"
               name="date"
-              type="date" 
-              className={`input ${err.date ? 'border-red-500' : 'border-gray-300'}`}
-              value={form.date} 
-              onChange={handleChange}
-              disabled={isSubmitting}
-            />
-            {err.date && (
-              <p className="text-sm text-red-600 mt-1 flex items-center gap-1">
-                <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                </svg>
-                {err.date}
-              </p>
-            )}
-          </div>
-
-          {/* Description Input */}
-          <div className="space-y-2">
-            <label htmlFor="description" className="block text-sm font-medium text-gray-700">
-              Izoh (ixtiyoriy)
-            </label>
-            <textarea
-              id="description"
-              name="description"
-              rows="3"
               className="input"
-              value={form.description} 
+              value={form.date}
               onChange={handleChange}
               disabled={isSubmitting}
-              placeholder="To'lov haqida qo'shimcha ma'lumot..."
+            />
+            {err.date && <p className="text-red-600 text-sm">{err.date}</p>}
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Izoh</label>
+            <textarea
+              name="description"
+              className="input"
+              rows="3"
+              value={form.description}
+              onChange={handleChange}
+              disabled={isSubmitting}
             />
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex flex-col sm:flex-row justify-end gap-3 pt-4 border-t border-gray-200">
-            <button 
-              type="button"
-              onClick={() => nav(-1)} 
-              className="btn-secondary"
-              disabled={isSubmitting}
-            >
-              <FaTimes className="mr-2" />
-              Bekor qilish
+          {/* Actions */}
+          <div className="flex justify-end gap-3 border-t pt-4">
+            <button type="button" className="btn-secondary" onClick={()=>nav(-1)} disabled={isSubmitting}>
+              <FaTimes className="mr-1" /> Bekor qilish
             </button>
-            <button 
-              type="submit"
-              className="btn-primary"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? (
-                <>
-                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Saqlanmoqda...
-                </>
-              ) : (
-                <>
-                  <FaSave className="mr-2" />
-                  Saqlash
-                </>
-              )}
+            <button type="submit" className="btn-primary" disabled={isSubmitting}>
+              {isSubmitting ? "Saqlanmoqda..." : (<><FaSave className="mr-1"/> Saqlash</>)}
             </button>
           </div>
+
         </div>
       </form>
     </div>

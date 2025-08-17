@@ -3,62 +3,89 @@ import { useNavigate } from "react-router";
 import { db } from "../../config/firebase";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore"; 
 import { 
-  FaUser, FaPhone, FaIdCard, FaMapMarkerAlt, 
-  FaBox, FaTags, FaRuler, FaCalculator, 
-  FaCalendarAlt, FaMoneyBillWave, FaSave, FaTimes 
+  FaUser, FaPhone, FaMapMarkerAlt, 
+  FaBox, FaTags, FaMoneyBillWave, FaSave, FaTimes,
+  FaPlus, FaTrash,
+  FaCalendarAlt
 } from "react-icons/fa";
 
 export default function AddClient() {
   const nav = useNavigate();
 
-  const [form, setForm] = useState({
-    fullName: "", phone: "", passportId: "", address: "",
-    productName: "", productType: "", productSize: "",
-    quantity: "", dailyPrice: "", startDate: "", actualDays: "", totalPrice: 0
+  const [clientInfo, setClientInfo] = useState({
+    fullName: "", 
+    phone: "", 
+    address: ""
   });
-  
+
+  const [products, setProducts] = useState([
+    {
+      productName: "", 
+      productType: "", 
+      startDate: "",
+      dailyPrice: "",
+      totalPrice: 0
+    }
+  ]);
+
   const [err, setErr] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [dateWarning, setDateWarning] = useState("");
 
-  const onChange = (k, v) => {
-    setForm(prev => {
-      let updated = { ...prev, [k]: v };
+  const handleClientChange = (key, value) => {
+    setClientInfo(prev => ({ ...prev, [key]: value }));
+  };
 
-      // Calculate total price when relevant fields change
-      if (updated.quantity && updated.dailyPrice && updated.actualDays) {
-        updated.totalPrice = Number(updated.quantity) * Number(updated.dailyPrice) * Number(updated.actualDays);
+  const handleProductChange = (index, key, value) => {
+    setProducts(prev => {
+      const updatedProducts = [...prev];
+      const updatedProduct = { ...updatedProducts[index], [key]: value };
+
+      // Calculate total price when daily price changes
+      if (key === "dailyPrice") {
+        updatedProduct.totalPrice = Number(updatedProduct.dailyPrice);
       }
 
-      // Calculate suggested days if start date is provided
-      if (k === "startDate" && v) {
-        const today = new Date().toISOString().slice(0, 10);
-        if (v > today) {
-          setDateWarning("Boshlanish sanasi bugundan keyin bo'lishi mumkin emas");
-        } else {
-          setDateWarning("");
-        }
-      }
-
-      return updated;
+      updatedProducts[index] = updatedProduct;
+      return updatedProducts;
     });
   };
 
+  const addProduct = () => {
+    setProducts(prev => [
+      ...prev,
+      {
+        productName: "", 
+        productType: "", 
+        startDate: "",
+        dailyPrice: "",
+        totalPrice: 0
+      }
+    ]);
+  };
+
+  const removeProduct = (index) => {
+    if (products.length <= 1) return;
+    setProducts(prev => prev.filter((_, i) => i !== index));
+  };
+
   const validate = () => {
-    const e = {};
-    if (!form.fullName.trim()) e.fullName = "Majburiy maydon";
-    if (!form.phone.trim()) e.phone = "Majburiy maydon";
-    if (!form.address.trim()) e.address = "Majburiy maydon";
-    if (!form.productName.trim()) e.productName = "Majburiy maydon";
-    if (!form.productType.trim()) e.productType = "Majburiy maydon";
-    if (!form.productSize.trim()) e.productSize = "Majburiy maydon";
-    if (!form.quantity) e.quantity = "Majburiy maydon";
-    if (!form.dailyPrice) e.dailyPrice = "Majburiy maydon";
-    if (!form.startDate) e.startDate = "Majburiy maydon";
-    if (!form.actualDays || form.actualDays <= 0) e.actualDays = "Iltimos, to'g'ri kun kiriting";
+    const errors = {};
     
-    setErr(e); 
-    return Object.keys(e).length === 0;
+    // Validate client info
+    if (!clientInfo.fullName.trim()) errors.fullName = "Majburiy maydon";
+    if (!clientInfo.phone.trim()) errors.phone = "Majburiy maydon";
+    if (!clientInfo.address.trim()) errors.address = "Majburiy maydon";
+    
+    // Validate products
+    products.forEach((product, index) => {
+      if (!product.productName.trim()) errors[`productName_${index}`] = "Majburiy maydon";
+      if (!product.productType.trim()) errors[`productType_${index}`] = "Majburiy maydon";
+      if (!product.startDate) errors[`startDate_${index}`] = "Majburiy maydon";
+      if (!product.dailyPrice || product.dailyPrice <= 0) errors[`dailyPrice_${index}`] = "Noto'g'ri narx";
+    });
+    
+    setErr(errors);
+    return Object.keys(errors).length === 0;
   };
   
   const submit = async () => {
@@ -68,42 +95,33 @@ export default function AddClient() {
     try {
       // Add client data
       const clientData = {
-        fullName: form.fullName,
-        phone: form.phone,
-        passportId: form.passportId,
-        address: form.address,
+        fullName: clientInfo.fullName,
+        phone: clientInfo.phone,
+        address: clientInfo.address,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
 
       const clientRef = await addDoc(collection(db, "clients"), clientData);
 
-      // Calculate end date based on start date and actual days
-      const startDate = new Date(form.startDate);
-      const endDate = new Date(startDate);
-      endDate.setDate(startDate.getDate() + Number(form.actualDays));
+      // Add rental data for each product
+      for (const product of products) {
+        const rentalData = {
+          clientId: clientRef.id,
+          clientName: clientInfo.fullName,
+          productName: product.productName,
+          productType: product.productType,
+          dailyPrice: Number(product.dailyPrice),
+          totalPrice: Number(product.totalPrice),
+          startDate: product.startDate,
+          status: "active",
+          returned: false,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        };
 
-      // Add rental data
-      const rentalData = {
-        clientId: clientRef.id,
-        clientName: form.fullName,
-        productName: form.productName,
-        productType: form.productType,
-        productSize: form.productSize,
-        quantity: Number(form.quantity),
-        dailyPrice: Number(form.dailyPrice),
-        totalDays: Number(form.actualDays),
-        totalPrice: Number(form.totalPrice),
-        startDate: form.startDate,
-        endDate: endDate.toISOString().slice(0, 10),
-        actualDaysUsed: Number(form.actualDays),
-        paymentDueDate: endDate.toISOString().slice(0, 10),
-        status: "active",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      };
-
-      await addDoc(collection(db, "rentals"), rentalData);
+        await addDoc(collection(db, "rentals"), rentalData);
+      }
       
       nav("/", { state: { success: true } });
     } catch (error) {
@@ -112,6 +130,10 @@ export default function AddClient() {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const calculateTotalAmount = () => {
+    return products.reduce((sum, product) => sum + product.totalPrice, 0);
   };
 
   return (
@@ -130,8 +152,8 @@ export default function AddClient() {
             <Field label="Ism va familiya" error={err.fullName} icon={<FaUser />}>
               <input 
                 className={`input ${err.fullName ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.fullName} 
-                onChange={e => onChange("fullName", e.target.value)}
+                value={clientInfo.fullName} 
+                onChange={e => handleClientChange("fullName", e.target.value)}
                 placeholder="To'liq ism sharifi"
               />
             </Field>
@@ -139,151 +161,114 @@ export default function AddClient() {
             <Field label="Telefon raqami" error={err.phone} icon={<FaPhone />}>
               <input 
                 className={`input ${err.phone ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.phone} 
-                onChange={e => onChange("phone", e.target.value)}
+                value={clientInfo.phone} 
+                onChange={e => handleClientChange("phone", e.target.value)}
                 placeholder="99890xxxxxxx"
-              />
-            </Field>
-            
-            <Field label="Pasport yoki ID raqami" error={err.passportId} icon={<FaIdCard />}>
-              <input 
-                className={`input ${err.passportId ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.passportId} 
-                onChange={e => onChange("passportId", e.target.value)}
-                placeholder="AA1234567"
               />
             </Field>
             
             <Field label="Manzil (ijara manzili)" error={err.address} icon={<FaMapMarkerAlt />}>
               <input 
                 className={`input ${err.address ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.address} 
-                onChange={e => onChange("address", e.target.value)}
+                value={clientInfo.address} 
+                onChange={e => handleClientChange("address", e.target.value)}
                 placeholder="To'liq manzil"
               />
             </Field>
           </Section>
 
-          {/* Rental Information Section */}
-          <Section 
-            title="Ijara ma'lumotlari" 
-            icon={<FaBox className="text-emerald-600" />}
-          >
-            <Field label="Mahsulot nomi" error={err.productName} icon={<FaBox />}>
-              <input 
-                className={`input ${err.productName ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.productName} 
-                onChange={e => onChange("productName", e.target.value)}
-                placeholder="Mahsulot nomi"
-              />
-            </Field>
-            
-            <Field label="Mahsulot turi" error={err.productType} icon={<FaTags />}>
-              <select
-                className={`input ${err.productType ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.productType}
-                onChange={e => onChange("productType", e.target.value)}
+          {/* Products Section */}
+          {products.map((product, index) => (
+            <Section 
+              key={index}
+              title={`Mahsulot ${index + 1}`} 
+              icon={<FaBox className="text-emerald-600" />}
+              action={
+                products.length > 1 && (
+                  <button 
+                    onClick={() => removeProduct(index)}
+                    className="text-red-500 hover:text-red-700 flex items-center text-sm"
+                  >
+                    <FaTrash className="mr-1" /> O'chirish
+                  </button>
+                )
+              }
+            >
+              <Field 
+                label="Mahsulot nomi" 
+                error={err[`productName_${index}`]} 
+                icon={<FaBox />}
               >
-                <option value="">Tanlang</option>
-                <option value="Lesa">Lesa</option>
-                <option value="Stoyka">Stoyka</option>
-                <option value="Apilafka">Apilafka</option>
-                <option value="Boshqa">Boshqa</option>
-              </select>
-            </Field>
-            
-            <Field label="Mahsulot razmeri" error={err.productSize} icon={<FaRuler />}>
-              <select
-                className={`input ${err.productSize ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.productSize}
-                onChange={e => onChange("productSize", e.target.value)}
-              >
-                <option value="">Tanlang</option>
-                <option value="3m">3 metr</option>
-                <option value="6m">6 metr</option>
-                <option value="9m">9 metr</option>
-                <option value="12m">12 metr</option>
-              </select>
-            </Field>
-            
-            <Field label="Berilgan soni" error={err.quantity} icon={<FaCalculator />}>
-              <input 
-                type="number" 
-                className={`input ${err.quantity ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.quantity} 
-                onChange={e => onChange("quantity", e.target.value)}
-                min="1"
-              />
-            </Field>
-            
-            <Field label="Bir kunlik narxi (so'm)" error={err.dailyPrice} icon={<FaMoneyBillWave />}>
-              <input 
-                type="number" 
-                className={`input ${err.dailyPrice ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.dailyPrice} 
-                onChange={e => onChange("dailyPrice", e.target.value)}
-                min="0"
-              />
-            </Field>
-            
-            <Field label="Boshlanish sanasi" error={err.startDate} icon={<FaCalendarAlt />}>
-              <input 
-                type="date" 
-                className={`input ${err.startDate ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.startDate} 
-                onChange={e => onChange("startDate", e.target.value)}
-                max={new Date().toISOString().slice(0, 10)}
-              />
-              {dateWarning && (
-                <p className="mt-1 text-sm text-yellow-600 flex items-center">
-                  <svg className="h-4 w-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {dateWarning}
-                </p>
-              )}
-            </Field>
-            
-            <Field label="Ijara kuni (necha kun)" error={err.actualDays} icon={<FaCalendarAlt />}>
-              <input 
-                type="number" 
-                className={`input ${err.actualDays ? 'border-red-500' : 'border-gray-300'}`}
-                value={form.actualDays} 
-                onChange={e => onChange("actualDays", e.target.value)}
-                min="1"
-                placeholder="Ishlatilgan kunlar soni"
-              />
-            </Field>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Field label="Tugash sanasi" icon={<FaCalendarAlt />}>
-              <div className="flex items-center">
-  <input 
-    className="input bg-gray-50 font-medium" 
-    value={
-      form.startDate && form.actualDays 
-        ? new Date(
-            new Date(form.startDate).getTime() + 
-            (Number(form.actualDays) * 24 * 60 * 60 * 1000)
-          ).toISOString().slice(0, 10)
-        : ""
-    } 
-    readOnly 
-  />
-</div>              </Field>
-              
-              <Field label="Umumiy narx (so'm)" icon={<FaMoneyBillWave />}>
-                <div className="flex items-center">
-                  <input 
-                    className="input bg-gray-50 font-bold text-emerald-700" 
-                    value={form.totalPrice.toLocaleString()} 
-                    readOnly 
-                  />
-                  <span className="ml-2 text-gray-500">so'm</span>
-                </div>
+                <input 
+                  className={`input ${err[`productName_${index}`] ? 'border-red-500' : 'border-gray-300'}`}
+                  value={product.productName} 
+                  onChange={e => handleProductChange(index, "productName", e.target.value)}
+                  placeholder="Mahsulot nomi"
+                />
               </Field>
-            </div>
-          </Section>
+              
+              <Field 
+                label="Mahsulot turi" 
+                error={err[`productType_${index}`]} 
+                icon={<FaTags />}
+              >
+                <select
+                  className={`input ${err[`productType_${index}`] ? 'border-red-500' : 'border-gray-300'}`}
+                  value={product.productType}
+                  onChange={e => handleProductChange(index, "productType", e.target.value)}
+                >
+                  <option value="">Tanlang</option>
+                  <option value="Lesa">Lesa</option>
+                  <option value="Stoyka">Stoyka</option>
+                  <option value="Apilafka">Apilafka</option>
+                  <option value="Boshqa">Boshqa</option>
+                </select>
+              </Field>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Field 
+                  label="Boshlanish sanasi" 
+                  error={err[`startDate_${index}`]} 
+                  icon={<FaCalendarAlt />}
+                >
+                  <input 
+                    type="date" 
+                    className={`input ${err[`startDate_${index}`] ? 'border-red-500' : 'border-gray-300'}`}
+                    value={product.startDate} 
+                    onChange={e => handleProductChange(index, "startDate", e.target.value)}
+                    max={new Date().toISOString().slice(0, 10)}
+                  />
+                </Field>
+                
+                <Field 
+                  label="Kunlik ijara narxi (so'm)" 
+                  error={err[`dailyPrice_${index}`]} 
+                  icon={<FaMoneyBillWave />}
+                >
+                  <input 
+                    type="number" 
+                    className={`input ${err[`dailyPrice_${index}`] ? 'border-red-500' : 'border-gray-300'}`}
+                    value={product.dailyPrice} 
+                    onChange={e => handleProductChange(index, "dailyPrice", e.target.value)}
+                    min="0"
+                  />
+                </Field>
+              </div>
+              
+            </Section>
+          ))}
+
+          {/* Add Product Button */}
+          <div className="flex justify-center">
+            <button 
+              onClick={addProduct}
+              className="btn-secondary flex items-center"
+            >
+              <FaPlus className="mr-2" /> Yangi mahsulot qo'shish
+            </button>
+          </div>
+
+          {/* Total Amount */}
 
           {/* Action Buttons */}
           <div className="flex flex-col sm:flex-row justify-end gap-3 pt-4 border-t border-gray-200">
@@ -345,14 +330,17 @@ function Field({ label, error, children, icon }) {
 }
 
 // Section Component
-function Section({ title, children, icon }) {
+function Section({ title, children, icon, action }) {
   return (
     <div className="space-y-4">
-      <div className="flex items-center border-b border-gray-200 pb-2">
-        {icon && <span className="mr-2">{icon}</span>}
-        <h3 className="text-lg font-semibold text-gray-800">{title}</h3>
+      <div className="flex items-center justify-between border-b border-gray-200 pb-2">
+        <div className="flex items-center">
+          {icon && <span className="mr-2">{icon}</span>}
+          <h3 className="text-lg font-semibold text-gray-800">{title}</h3>
+        </div>
+        {action && <div>{action}</div>}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-6">
         {children}
       </div>
     </div>
